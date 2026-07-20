@@ -69,3 +69,23 @@ jobs:
               echo "💤 Market closed. Code deployment updated on disk. Crontab will boot code at 9:00 AM."
             fi
             
+          script: |
+            cd /home/${{ secrets.SERVER_USERNAME }}/nifty-momentum-harvester || exit 1
+            git fetch --all
+            git reset --hard origin/main
+            source venv/bin/activate
+            pip install -r requirements.txt pytz  # Added pytz library dependency
+            chmod +x launcher.sh
+            
+            # 🕒 TIMEZONE TUNING: Calculate current hour and minute in Indian Standard Time (IST)
+            CURRENT_IST_TIME=$(TZ="Asia/Kolkata" date +%H%M)
+            CURRENT_IST_DAY=$(TZ="Asia/Kolkata" date +%u)
+            
+            # Hot-swap check evaluates against true Indian Standard Time limits
+            if [ "$CURRENT_IST_TIME" -ge "0900" ] && [ "$CURRENT_IST_TIME" -le "1540" ] && [ "$CURRENT_IST_DAY" -le 5 ]; then
+              echo "⚡ Indian Markets Open (IST: $CURRENT_IST_TIME). Hot-swapping running architecture instance..."
+              ./launcher.sh
+            else
+              echo "💤 Market Closed (IST: $CURRENT_IST_TIME). Code updated on server disk successfully."
+            fi
+            
