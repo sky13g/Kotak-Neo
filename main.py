@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import logging
 from datetime import datetime, timedelta, time as datetime_time
 import pandas as pd
 import numpy as np
@@ -8,8 +9,26 @@ import requests
 from neo_api_client import NeoAPI
 
 # ==============================================================================
-# 1. OPTIMIZED NMH-5 SYSTEMS CONFIGURATION PARAMETERS
+# 1. SYSTEM LOGGING FILE SPECIFICATION CONFIGURATION
 # ==============================================================================
+# Set up file path tracking inside your Ubuntu Linux project directory
+log_filename = "nmh5_execution.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename),  # Appends data smoothly into the log file
+        logging.StreamHandler(sys.stdout)   # Simultaneously routes text prints to the terminal screen
+    ]
+)
+logger = logging.getLogger("NMH5_HARVESTER")
+
+# ==============================================================================
+# 2. NMH-5 ENGINE MODE SELECTOR & CONFIGURATION PARAMETERS (SETUP C)
+# ==============================================================================
+MODE = "PAPER"  # 🟢 CHANGE TO "LIVE" TO DEPLOY REAL CAPITAL VIA KOTAK NEO
+
 TIMEFRAME = "5minute"
 ADX_ENTRY_THRESHOLD = 18
 RSI_LONG_ENTRY = 50
@@ -24,33 +43,50 @@ RSI_SHORT_EXIT = 20
 OPTIONS_OFFSET = 500  
 LOT_SIZE = 65        
 
-# RISK MANAGEMENT ENGINE CONSTANTS
-MAX_DAILY_LOSS_LIMIT = 3000.00  # Strict intraday capital protection circuit-breaker
+MAX_DAILY_LOSS_LIMIT = 3000.00  # Strict Intraday Capital Protection Stop
 
 # ==============================================================================
-# 2. TELEGRAM BROADCASTING SERVICE ENGINE
+# 3. VIRTUAL PAPER TRADING STATE LEDGER
+# ==============================================================================
+paper_position = {
+    "active": False,
+    "symbol": None,
+    "type": None,       # "CE" or "PE"
+    "strike": 0,
+    "entry_spot": 0.0,
+    "entry_premium": 0.0,
+    "qty": 0
+}
+paper_realized_pnl = 0.0
+last_tracked_day = datetime.now().date()  
+
+# ==============================================================================
+# 4. TELEGRAM BROADCASTING SERVICE ENGINE
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 def send_telegram_alert(message):
     """Sends a real-time status or trade notification directly to your phone."""
+    mode_prefix = "🧪 [PAPER MODE] " if MODE == "PAPER" else "⚡ [LIVE TRADING] "
+    formatted_message = f"{mode_prefix}{message}"
+    
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"⚠️ Telegram config missing. Print alert: {message}")
+        logger.warning(f"Telegram configuration keys missing. Suppressing wire alert.")
         return
         
     url = f"https://telegram.org{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": formatted_message, "parse_mode": "Markdown"}
     
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code != 200:
-            print(f"❌ Telegram API Error Details: {response.text}")
+            logger.error(f"Telegram API Response Error Code: {response.status_code} | Text: {response.text}")
     except Exception as e:
-        print(f"⚠️ Failed to broadcast Telegram notification packet: {e}")
+        logger.error(f"Failed to transmit Telegram network package: {e}")
 
 # ==============================================================================
-# 3. SECURE CORE SYSTEM ENVIRONMENT AUTHENTICATION
+# 5. SECURE CORE SYSTEM ENVIRONMENT AUTHENTICATION
 # ==============================================================================
 CONSUMER_KEY = os.environ.get("KOTAK_CONSUMER_KEY")
 CONSUMER_SECRET = os.environ.get("KOTAK_CONSUMER_SECRET")
@@ -59,23 +95,28 @@ NEO_PASSWORD = os.environ.get("KOTAK_PASSWORD")
 MPIN = os.environ.get("KOTAK_MPIN")
 
 if not all([CONSUMER_KEY, CONSUMER_SECRET, NEO_USERNAME, NEO_PASSWORD, MPIN]):
-    err_txt = "❌ Structural Boot Error: Missing essential environment profiles on Ubuntu shell."
-    print(err_txt)
+    logger.critical("Fatal Security Error: Missing required system variables in Ubuntu environment.")
     sys.exit(1)
 
-print("🔄 Connecting to Kotak Neo APIs...")
-client = NeoAPI(consumer_key=CONSUMER_KEY, consumer_secret=CONSUMER_SECRET, environment="PROD")
-client.login(username=NEO_USERNAME, password=NEO_PASSWORD)
-client.session_2fa(OTP=MPIN)
-print("✅ Secure API Authenticated Successfully.")
+logger.info(f"Initializing Nifty Momentum Harvester Engine Core in [{MODE}] profile...")
+logger.info("Establishing secure handshakes with Kotak Neo API infrastructure...")
 
-# Global state arrays
+try:
+    client = NeoAPI(consumer_key=CONSUMER_KEY, consumer_secret=CONSUMER_SECRET, environment="PROD")
+    client.login(username=NEO_USERNAME, password=NEO_PASSWORD)
+    client.session_2fa(OTP=MPIN)
+    logger.info("✅ Kotak Neo multi-factor session validation cleared. Bot is active.")
+except Exception as login_err:
+    logger.critical(f"Failed to authenticate connection session with broker servers: {login_err}")
+    sys.exit(1)
+
+# Global tracking variables
 long_peak_reached = False
 short_floor_reached = False
-bot_shutdown_today = False  # Soft lock flag to prevent over-trading after risk limits are breached
+bot_shutdown_today = False  
 
 # ==============================================================================
-# 4. MATH ENGINE & DYNAMIC OPTION EXPIRY CALCULATOR
+# 6. MATH ENGINE & DYNAMIC OPTION EXPIRY CALCULATOR
 # ==============================================================================
 def get_dynamic_expiry_string():
     """Calculates the current week's Thursday Nifty option contract expiry date string."""
@@ -116,98 +157,62 @@ def calculate_nmh5_vectors(df):
     
     return df.iloc[-1], df.iloc[-2]
 
-def get_kotak_option_symbol(spot_price, option_type):
+def get_kotak_option_details(spot_price, option_type):
     rounded_base = round(spot_price / 100) * 100
     strike = rounded_base - OPTIONS_OFFSET if option_type == "CE" else rounded_base + OPTIONS_OFFSET
     expiry_string = get_dynamic_expiry_string()
-    return f"NIFTY{expiry_string}{option_type}{strike}"
+    symbol = f"NIFTY{expiry_string}{option_type}{strike}"
+    return symbol, strike
+
+def get_intrinsic_premium(spot_price, strike_price, option_type):
+    """Approximates deep ITM pricing structures via mathematical intrinsic value models."""
+    if option_type == "CE":
+        return max(0.0, spot_price - strike_price)
+    else:
+        return max(0.0, strike_price - spot_price)
 
 # ==============================================================================
-# 5. CORE RISK PROTECTION METRICS & EXECUTION ENGINE
+# 7. ENHANCED RISK MONITORING & DATA LOGGING ENGINE
 # ==============================================================================
 def verify_daily_risk_limits():
-    """Checks your Kotak account's total realized P&L and triggers an emergency halt if needed."""
-    global bot_shutdown_today
+    global bot_shutdown_today, paper_realized_pnl
     
     try:
-        # Fetch realized intraday profit and loss data streams from Kotak Neo API
-        trade_report = client.trade_report()
-        if not trade_report or 'realised_pnl' not in trade_report:
-            return True # Proceed if no trading transactions are found yet
-
-        current_realized_pnl = float(trade_report['realised_pnl'])
+        if MODE == "LIVE":
+            trade_report = client.trade_report()
+            if not trade_report or 'realised_pnl' not in trade_report:
+                return True
+            current_realized_pnl = float(trade_report['realised_pnl'])
+        else:
+            current_realized_pnl = paper_realized_pnl
         
-        # Trigger an emergency stop if realized losses exceed your limit
         if current_realized_pnl <= -MAX_DAILY_LOSS_LIMIT:
             if not bot_shutdown_today:
-                alert_msg = f"🚨 *NMH-5 EMERGENCY RISK SHUTDOWN* 🚨\n\nDaily loss limit hit: *₹{current_realized_pnl:.2f}*\nMax allowed loss: *₹{MAX_DAILY_LOSS_LIMIT}*\n\nStopping all bot logic on Ubuntu Server for the day."
+                alert_msg = f"🚨 *EMERGENCY RISK SHUTDOWN* 🚨\n\nDaily loss limit hit: *₹{current_realized_pnl:.2f}*\nMax allowed loss: *₹{MAX_DAILY_LOSS_LIMIT}*\n\nStopping all tracking modules on Ubuntu Server."
+                logger.error(f"Risk Management Breach Detected. Total Realized Loss: ₹{current_realized_pnl:.2f}. Executing account lock.")
                 send_telegram_alert(alert_msg)
-                print(alert_msg)
                 
-                # Check for and clear any unexpected open orders left on the account
-                positions = client.positions()
-                active_pos = [p for p in positions if p.get('tradingSymbol', '').startswith("NIFTY") and int(p.get('flgOpenPosition', 0)) != 0]
-                for pos in active_pos:
-                    sym = pos['tradingSymbol']
-                    qty = int(pos['netQty'])
-                    client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(qty)), trading_symbol=sym, transaction_type="S")
+                if MODE == "LIVE":
+                    positions = client.positions()
+                    active_pos = [p for p in positions if p.get('tradingSymbol', '').startswith("NIFTY") and int(p.get('flgOpenPosition', 0)) != 0]
+                    for pos in active_pos:
+                        sym = pos['tradingSymbol']
+                        qty = int(pos['netQty'])
+                        client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(qty)), trading_symbol=sym, transaction_type="S")
+                        logger.info(f"Emergency square-off order placed for live position: {sym}")
+                else:
+                    paper_position["active"] = False
                 
                 bot_shutdown_today = True
             return False
             
     except Exception as risk_err:
-        print(f"⚠️ Risk Monitor Exception warning token: {risk_err}")
+        logger.error(f"Risk Engine Exception Encountered: {risk_err}")
     return True
 
-def run_kotak_harvester_loop():
-    global long_peak_reached, short_floor_reached, bot_shutdown_today
+def monitor_and_print_dashboard(current, spot, has_active_position, active_symbol):
+    """Logs data parameters and prints a system status overview."""
+    # Write a clean data log event to the file
+    logger.info(f"Spot Check: Nifty={spot:.2f} | ADX={current['ADX']:.2f} | RSI={current['RSI']:.2f} | PositionActive={has_active_position}")
     
-    now = datetime.now().time()
-    
-    # Automatically reset the daily risk lock before the morning bell
-    if now < datetime_time(9, 15):
-        bot_shutdown_today = False
-        return
-
-    if now < datetime_time(9, 20) or now > datetime_time(15, 10): 
-        return
-        
-    # Run the risk validation engine first
-    if bot_shutdown_today or not verify_daily_risk_limits():
-        return
-
-    df = get_kotak_live_candles()
-    current, previous = calculate_nmh5_vectors(df)
-    spot = current["close"]
-    
-    positions = client.positions()
-    active_pos = [p for p in positions if p.get('tradingSymbol', '').startswith("NIFTY") and int(p.get('flgOpenPosition', 0)) != 0]
-
-    # 🟢 LAYER 1: UNIFIED HARVESTER HARVEST EXITS
-    if active_pos:
-        pos = active_pos
-        sym = pos['tradingSymbol']
-        qty = int(pos['netQty'])
-        
-        if "C" in sym:
-            if current["RSI"] > RSI_LONG_PEAK: 
-                long_peak_reached = True
-            if long_peak_reached and current["RSI"] < RSI_LONG_EXIT:
-                client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(qty)), trading_symbol=sym, transaction_type="S")
-                send_telegram_alert(f"💰 *NMH-5 Profit Harvested*\n\nClosed Call Contract: `{sym}`\nReason: Spot RSI reached peak value and cooled below {RSI_LONG_EXIT}.")
-                return
-        elif "P" in sym:
-            if current["RSI"] < RSI_SHORT_FLOOR: 
-                short_floor_reached = True
-            if short_floor_reached and current["RSI"] > RSI_SHORT_EXIT:
-                client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(qty)), trading_symbol=sym, transaction_type="S")
-                send_telegram_alert(f"💰 *NMH-5 Profit Harvested*\n\nClosed Put Contract: `{sym}`\nReason: Spot RSI hit floor value and bounced above {RSI_SHORT_EXIT}.")
-                return
-
-    # 🔵 LAYER 2: SYSTEM CRITERIA MOMENTUM ENTRIES
-    if not active_pos:
-        long_peak_reached, short_floor_reached = False, False
-        is_gold = previous["EMA_5"] <= previous["EMA_10"] and current["EMA_5"] > current["EMA_10"]
-        is_death = previous["EMA_5"] >= previous["EMA_10"] and current["EMA_5"] < current["EMA_10"]
-
-    
+    # Render terminal visual display dashboard layout
