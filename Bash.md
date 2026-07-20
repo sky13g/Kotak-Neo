@@ -22,3 +22,12 @@ export KOTAK_MPIN="your_mpin"
 # 6. Open a virtual headless window screen so the bot stays active after you close your terminal
 tmux new -s niftybot
 python3 main.py
+
+
+
+
+ DevOps Environment Update for UbuntuTo enable Telegram alerts and protect your capital on your Ubuntu Linux VM, you must add two new environment variables to your system.Run these commands in your Ubuntu terminal before starting the script:
+
+
+export TELEGRAM_BOT_TOKEN="your_bot_token_from_botfather"
+export TELEGRAM_CHAT_ID="your_personal_telegram_chat_id"
