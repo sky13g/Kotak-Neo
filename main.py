@@ -172,47 +172,223 @@ def get_intrinsic_premium(spot_price, strike_price, option_type):
         return max(0.0, strike_price - spot_price)
 
 # ==============================================================================
-# 7. ENHANCED RISK MONITORING & DATA LOGGING ENGINE
+# ==============================================================================
+# 7. ENHANCED RISK MONITORING & DATA LOGGING ENGINE (COMPLETE)
 # ==============================================================================
 def verify_daily_risk_limits():
+    """Checks your account's total realized P&L and triggers an emergency halt if needed."""
     global bot_shutdown_today, paper_realized_pnl
     
     try:
         if MODE == "LIVE":
+            # Fetch real-time realized intraday profit and loss data streams from Kotak Neo API
             trade_report = client.trade_report()
             if not trade_report or 'realised_pnl' not in trade_report:
-                return True
+                return True # Proceed safely if no transactions have been executed yet
             current_realized_pnl = float(trade_report['realised_pnl'])
         else:
+            # Maintain virtual validation using internal memory arrays
             current_realized_pnl = paper_realized_pnl
         
+        # Trigger an emergency stop if your maximum intraday loss barrier is violated
         if current_realized_pnl <= -MAX_DAILY_LOSS_LIMIT:
             if not bot_shutdown_today:
-                alert_msg = f"🚨 *EMERGENCY RISK SHUTDOWN* 🚨\n\nDaily loss limit hit: *₹{current_realized_pnl:.2f}*\nMax allowed loss: *₹{MAX_DAILY_LOSS_LIMIT}*\n\nStopping all tracking modules on Ubuntu Server."
-                logger.error(f"Risk Management Breach Detected. Total Realized Loss: ₹{current_realized_pnl:.2f}. Executing account lock.")
+                alert_msg = (
+                    f"🚨 *EMERGENCY RISK SHUTDOWN* 🚨\n\n"
+                    f"Daily loss limit breached: *₹{current_realized_pnl:.2f}*\n"
+                    f"Max allowed threshold: *₹{MAX_DAILY_LOSS_LIMIT}*\n\n"
+                    f"Stopping all tracking loops on the Ubuntu Server for the day."
+                )
+                logger.error(f"Risk Management Breach! Total Realized Loss: ₹{current_realized_pnl:.2f}. Executing account lock.")
                 send_telegram_alert(alert_msg)
                 
                 if MODE == "LIVE":
+                    # Fetch active portfolio positions to square them off immediately
                     positions = client.positions()
                     active_pos = [p for p in positions if p.get('tradingSymbol', '').startswith("NIFTY") and int(p.get('flgOpenPosition', 0)) != 0]
                     for pos in active_pos:
                         sym = pos['tradingSymbol']
                         qty = int(pos['netQty'])
+                        # Route emergency market sell/buy order based on the position vector
                         client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(qty)), trading_symbol=sym, transaction_type="S")
-                        logger.info(f"Emergency square-off order placed for live position: {sym}")
+                        logger.info(f"Emergency square-off order placed for live contract: {sym}")
                 else:
+                    # Clear out the paper database memory state instantly
                     paper_position["active"] = False
                 
                 bot_shutdown_today = True
-            return False
+            return False # Block the execution pipeline completely
             
     except Exception as risk_err:
-        logger.error(f"Risk Engine Exception Encountered: {risk_err}")
-    return True
+        logger.error(f"Risk Engine Exception Encountered: {risk_err}", exc_info=True)
+    return True # Capital boundaries are secure; proceed to entry/exit filters
 
 def monitor_and_print_dashboard(current, spot, has_active_position, active_symbol):
-    """Logs data parameters and prints a system status overview."""
-    # Write a clean data log event to the file
+    """Logs data parameters to disk and prints a system status overview to terminal."""
+    # Write a clean, timestamped data snapshot straight to your nmh5_execution.log file
     logger.info(f"Spot Check: Nifty={spot:.2f} | ADX={current['ADX']:.2f} | RSI={current['RSI']:.2f} | PositionActive={has_active_position}")
     
+    # Render an explicit visual diagnostic console dashboard layout inside your tmux view
+    print("\n" + "="*60)
+    print(f"📊 NMH-5 ENGINE LIVE MONITORING MATRIX | MODE: {MODE}")
+    print("="*60)
+    print(f"📈 Nifty Spot Index Close : {spot:.2f}")
+    print(f"📉 Analytical Metrics     : ADX: {current['ADX']:.2f} | RSI: {current['RSI']:.2f}")
+    print(f"🔄 Moving Average Vector  : EMA(5): {current['EMA_5']:.2f} | EMA(10): {current['EMA_10']:.2f}")
+    print("-"*60)
+    
+    if MODE == "PAPER":
+        print(f"💰 Cumulative Realized P&L: ₹{paper_realized_pnl:.2f}")
+        if has_active_position:
+            current_prem = get_intrinsic_premium(spot, paper_position["strike"], paper_position["type"])
+            floating_pnl = (current_prem - paper_position["entry_premium"]) * paper_position["qty"]
+            print(f"📂 Active Paper Position  : {active_symbol} (Qty: {paper_position['qty']})")
+            print(f"🎟️ Entry Option Premium   : ₹{paper_position['entry_premium']:.2f}")
+            print(f"🎯 Current Option Premium : ₹{current_prem:.2f}")
+            print(f"📊 Floating Intraday P&L  : ₹{floating_pnl:.2f}")
+        else:
+            print("📂 Active Paper Position  : NO OPEN POSITIONS")
+    else:
+        print("⚡ Live account status is monitored via Kotak Trade Console Dashboard directly.")
+    print("="*60 + "\n")
+
     # Render terminal visual display dashboard layout
+# ==============================================================================
+# 8. UNIFIED CORE EXECUTION DRIVER BLOCK (REPLACEMENT ZONE)
+# ==============================================================================
+def run_kotak_harvester_loop():
+    global long_peak_reached, short_floor_reached, bot_shutdown_today, paper_realized_pnl, last_tracked_day
+    
+    # 🕒 CRITICAL: Explicitly lock runtime evaluations to Indian Standard Time (IST)
+    IST = pytz.timezone('Asia/Kolkata')
+    now_dt = datetime.now(IST)
+    now_time = now_dt.time()
+    
+    # AUTOMATED MIDNIGHT BALANCES RESET LOGIC
+    if now_dt.date() > last_tracked_day:
+        logger.info(f"Midnight IST date rollover detected. Previous day's realized P&L: ₹{paper_realized_pnl:.2f}")
+        reset_msg = f"🌅 *New Market Day Initialized*\n\nResetting all paper accounts ledger states.\nPrevious Day Closed Realized Balance: *₹{paper_realized_pnl:.2f}*"
+        send_telegram_alert(reset_msg)
+        
+        # Reset variable conditions
+        paper_realized_pnl = 0.0
+        paper_position["active"] = False
+        bot_shutdown_today = False
+        long_peak_reached = False
+        short_floor_reached = False
+        last_tracked_day = now_dt.date()
+        logger.info("Internal strategy memory clear completed for the new day.")
+        return
+
+    if now_time < datetime_time(9, 20) or now_time > datetime_time(15, 10): 
+        return
+        
+    if bot_shutdown_today or not verify_daily_risk_limits():
+        return
+
+    df = get_kotak_live_candles()
+    current, previous = calculate_nmh5_vectors(df)
+    spot = current["close"]
+    
+    has_active_position = False
+    active_symbol = ""
+    active_qty = 0
+    
+    if MODE == "LIVE":
+        positions = client.positions()
+        active_pos = [p for p in positions if p.get('tradingSymbol', '').startswith("NIFTY") and int(p.get('flgOpenPosition', 0)) != 0]
+        if active_pos:
+            has_active_position = True
+            active_symbol = active_pos['tradingSymbol']
+            active_qty = int(active_pos['netQty'])
+    else:
+        if paper_position["active"]:
+            has_active_position = True
+            active_symbol = paper_position["symbol"]
+            active_qty = paper_position["qty"]
+
+    # Trigger terminal display dashboard stream
+    monitor_and_print_dashboard(current, spot, has_active_position, active_symbol)
+
+    # 🟢 LAYER 1: UNIFIED HARVESTER PROFIT SECURING MODULE
+    if has_active_position:
+        if "C" in active_symbol:  
+            if current["RSI"] > RSI_LONG_PEAK: 
+                long_peak_reached = True
+                logger.info(f"RSI breached Long overbought peak boundary ({RSI_LONG_PEAK}). Trailing engine activated.")
+            if long_peak_reached and current["RSI"] < RSI_LONG_EXIT:
+                logger.info(f"Long Harvester Target Met. Spot RSI: {current['RSI']:.2f}. Closing trade.")
+                if MODE == "LIVE":
+                    client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(active_qty)), trading_symbol=active_symbol, transaction_type="S")
+                else:
+                    exit_prem = get_intrinsic_premium(spot, paper_position["strike"], "CE")
+                    trade_pnl = (exit_prem - paper_position["entry_premium"]) * paper_position["qty"]
+                    paper_realized_pnl += trade_pnl
+                    paper_position["active"] = False
+                    
+                send_telegram_alert(f"💰 *Profit Harvested*\n\nClosed Call Contract: `{active_symbol}`\nReason: Spot RSI reached peak value and cooled below {RSI_LONG_EXIT}.")
+                return
+                
+        elif "P" in active_symbol:  
+            if current["RSI"] < RSI_SHORT_FLOOR: 
+                short_floor_reached = True
+                logger.info(f"RSI breached Short oversold floor boundary ({RSI_SHORT_FLOOR}). Trailing engine activated.")
+            if short_floor_reached and current["RSI"] > RSI_SHORT_EXIT:
+                logger.info(f"Short Harvester Target Met. Spot RSI: {current['RSI']:.2f}. Closing trade.")
+                if MODE == "LIVE":
+                    client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(abs(active_qty)), trading_symbol=active_symbol, transaction_type="S")
+                else:
+                    exit_prem = get_intrinsic_premium(spot, paper_position["strike"], "PE")
+                    trade_pnl = (exit_prem - paper_position["entry_premium"]) * paper_position["qty"]
+                    paper_realized_pnl += trade_pnl
+                    paper_position["active"] = False
+                    
+                send_telegram_alert(f"💰 *Profit Harvested*\n\nClosed Put Contract: `{active_symbol}`\nReason: Spot RSI hit floor value and bounced above {RSI_SHORT_EXIT}.")
+                return
+
+    # 🔵 LAYER 2: TREND SELECTION ENTRY MODULE
+    if not has_active_position:
+        long_peak_reached, short_floor_reached = False, False
+        is_gold = previous["EMA_5"] <= previous["EMA_10"] and current["EMA_5"] > current["EMA_10"]
+        is_death = previous["EMA_5"] >= previous["EMA_10"] and current["EMA_5"] < current["EMA_10"]
+        
+        if is_gold and current["ADX"] > ADX_ENTRY_THRESHOLD and current["RSI"] > RSI_LONG_ENTRY:
+            target_symbol, target_strike = get_kotak_option_details(spot, "CE")
+            logger.info(f"Strategy Criteria Matched: Bullish Golden Crossover. Target Contract: {target_symbol}")
+            if MODE == "LIVE":
+                client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(LOT_SIZE), trading_symbol=target_symbol, transaction_type="B")
+            else:
+                paper_position["active"] = True
+                paper_position["symbol"] = target_symbol
+                paper_position["type"] = "CE"
+                paper_position["strike"] = target_strike
+                paper_position["entry_spot"] = spot
+                paper_position["entry_premium"] = get_intrinsic_premium(spot, target_strike, "CE")
+                paper_position["qty"] = LOT_SIZE
+                
+            send_telegram_alert(f"🚀 *Long Trade Executed*\n\nBought 500-PT ITM Call Option: `{target_symbol}`\nSpot Entry Reference Level: *{spot}*")
+            
+        elif is_death and current["ADX"] > ADX_ENTRY_THRESHOLD and current["RSI"] < RSI_SHORT_ENTRY:
+            target_symbol, target_strike = get_kotak_option_details(spot, "PE")
+            logger.info(f"Strategy Criteria Matched: Bearish Death Crossover. Target Contract: {target_symbol}")
+            if MODE == "LIVE":
+                client.place_order(exchange_segment="NCO", product="INTRADAY", price="0", order_type="MKT", quantity=str(LOT_SIZE), trading_symbol=target_symbol, transaction_type="B")
+            else:
+                paper_position["active"] = True
+                paper_position["symbol"] = target_symbol
+                paper_position["type"] = "PE"
+                paper_position["strike"] = target_strike
+                paper_position["entry_spot"] = spot
+                paper_position["entry_premium"] = get_intrinsic_premium(spot, target_strike, "PE")
+                paper_position["qty"] = LOT_SIZE
+                
+            send_telegram_alert(f"🛑 *Short Trade Executed*\n\nBought 500-PT ITM Put Option: `{target_symbol}`\nSpot Entry Reference Level: *{spot}*")
+
+# Headless production background server execution driver
+while True:
+    try:
+        run_kotak_harvester_loop()
+    except Exception as e:
+        logger.error(f"Critical Runtime Exception Caught: {e}", exc_info=True)
+    time.sleep(300)
+    
